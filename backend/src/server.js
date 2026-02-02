@@ -1,0 +1,199 @@
+const Repartidor = require('./models/Repartidor');
+
+const jwt = require('jsonwebtoken');
+const Pedido = require('./models/Pedido'); // ajusta la ruta si es diferente
+
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const compression = require('compression');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
+const path = require('path');
+
+// Importar rutas
+const authRoutes = require('./routes/auth.routes');
+const vendedorRoutes = require('./routes/vendedor.routes');
+const productoRoutes = require('./routes/producto.routes');
+const pedidoRoutes = require('./routes/pedido.routes');
+const repartidorRoutes = require('./routes/repartidor.routes');
+// const usuarioRoutes = require('./routes/usuarios.routes'); // Eliminado, unificado en auth.routes
+
+
+// Importar base de datos
+const { sequelize } = require('./config/database');
+require('./models'); 
+
+// Crear aplicación Express
+const app = express();
+const httpServer = createServer(app);
+
+// Configurar Socket.IO para tiempo real
+const io = new Server(httpServer, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE']
+  }
+});
+
+// Middlewares globales
+app.use(helmet());
+app.use(cors());
+app.use(compression());
+app.use(morgan('dev'));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Middleware para Socket.IO
+// =======================
+// Socket.IO Auth Middleware
+// =======================
+io.use((socket, next) => {
+  try {
+    // 1) token por handshake.auth.token (recomendado)
+    // 2) o por header Authorization: Bearer xxx
+    const token =
+      socket.handshake?.auth?.token ||
+      (socket.handshake?.headers?.authorization?.startsWith('Bearer ')
+        ? socket.handshake.headers.authorization.split(' ')[1]
+        : null);
+
+    if (!token) return next(new Error('NO_TOKEN'));
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Guarda el usuario en el socket (equivalente a req.usuario)
+    socket.usuario = decoded; 
+    // decoded debe traer al menos: { id, tipoUsuario } según tu auth
+
+    return next();
+  } catch (err) {
+    return next(new Error('INVALID_TOKEN'));
+  }
+});
+
+// Servir archivos estáticos
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+
+
+// Rutas de la API
+app.use('/api/auth', authRoutes);
+app.use('/api/vendedores', vendedorRoutes);
+app.use('/api/productos', productoRoutes);
+app.use('/api/pedidos', pedidoRoutes);
+app.use('/api/repartidores', repartidorRoutes);
+// app.use('/api/usuarios', usuarioRoutes); // Eliminado, unificado en auth.routes
+
+
+// Ruta de prueba
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    message: 'ValleXpress Backend funcionando correctamente',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Manejo de rutas no encontradas
+app.use('*', (req, res) => {
+  res.status(404).json({
+    error: 'Ruta no encontrada',
+    path: req.originalUrl
+  });
+});
+
+// Manejo global de errores
+app.use((err, req, res, next) => {
+  console.error('Error:', err);
+
+  res.status(err.status || 500).json({
+    error: err.message || 'Error interno del servidor',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
+});
+
+async function puedeAccederAPedido(usuario, pedidoId) {
+  const pedido = await Pedido.findByPk(pedidoId);
+
+  if (!pedido) return { ok: false, error: 'PEDIDO_NO_EXISTE' };
+
+  // Cliente: clienteId sí es usuarios.id
+  const esCliente =
+    usuario.tipoUsuario === 'cliente' && pedido.clienteId === usuario.id;
+
+  // Repartidor: pedido.repartidorId es repartidores.id
+  let esRepartidor = false;
+
+  if (usuario.tipoUsuario === 'repartidor') {
+    const repartidor = await Repartidor.findOne({
+      where: { usuarioId: usuario.id } // <- esto asume que Repartidor tiene usuarioId
+    });
+
+    esRepartidor = !!repartidor && pedido.repartidorId === repartidor.id;
+  }
+
+  if (!esCliente && !esRepartidor) {
+    return { ok: false, error: 'NO_AUTORIZADO' };
+  }
+
+  return { ok: true, pedido };
+}
+
+const ultimaUbicacionPorPedido = new Map();
+
+const registerPedidosSocket = require('./sockets/pedidos.socket');
+
+io.on('connection', (socket) => {
+  console.log(
+    '✅ Cliente conectado:',
+    socket.id,
+    socket.usuario?.tipoUsuario,
+    socket.usuario?.id
+  );
+
+  registerPedidosSocket(io, socket);
+
+  socket.on('disconnect', () => {
+    console.log('❌ Cliente desconectado:', socket.id);
+  });
+});
+
+
+
+// Iniciar servidor
+const PORT = process.env.PORT || 3000;
+
+async function startServer() {
+  try {
+    // Verificar conexión a la base de datos
+    await sequelize.authenticate();
+    console.log('✅ Conexión a PostgreSQL establecida');
+
+    // Sincronizar modelos (solo en desarrollo)
+    if (process.env.NODE_ENV === 'development') {
+      await sequelize.sync({ alter: false });
+      console.log('✅ Modelos sincronizados');
+    }
+
+    // Iniciar servidor
+    httpServer.listen(PORT, () => {
+      console.log('========================================');
+      console.log('🚀 ValleXpress Backend');
+      console.log('========================================');
+      console.log(`📡 Servidor: http://localhost:${PORT}`);
+      console.log(`🔗 API: http://localhost:${PORT}/api`);
+      console.log(`💾 Base de datos: PostgreSQL`);
+      console.log(`📊 Entorno: ${process.env.NODE_ENV}`);
+      console.log('========================================');
+    });
+  } catch (error) {
+    console.error('❌ Error al iniciar servidor:', error);
+    process.exit(1);
+  }
+}
+
+startServer();
+
+module.exports = { app, io };

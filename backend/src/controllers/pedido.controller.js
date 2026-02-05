@@ -1,9 +1,10 @@
-/* controllers/pedido.controller.js */
+ /* controllers/pedido.controller.js */
 
 const Pedido = require('../models/Pedido');
 const Usuario = require('../models/Usuario');
 const Vendedor = require('../models/Vendedor');
 const Repartidor = require('../models/Repartidor');
+const Notificacion = require('../models/Notificacion');
 const DetallePedido = require('../models/DetallePedido');
 const Producto = require('../models/Producto');
 const { sequelize } = require('../config/database');
@@ -71,7 +72,7 @@ class PedidoController {
   async crear(req, res) {
     const t = await sequelize.transaction();
     try {
-      const { vendedorId, productos, metodoPago, notasCliente } = req.body;
+      const { vendedorId, productos, metodoPago, notasCliente, direccionEntregaId } = req.body;
       const clienteId = req.usuario.id;
 
       // 1) Validar stock con lock y calcular subtotal
@@ -287,6 +288,43 @@ class PedidoController {
         estado,
         [fechaCampo]: new Date(),
       });
+
+      // Emitir y persistir notificaciones a repartidores cuando el pedido está listo
+      try {
+        if (req.io && estado === 'listo') {
+          const shortMsg = `Pedido listo: ${pedido.id}`;
+          // Notificar a repartidores disponibles (cada uno recibe su propia fila en la tabla)
+          const repartidores = await Repartidor.findAll({ where: { disponible: true } });
+          for (const rep of repartidores) {
+            const usuarioDest = rep.usuarioId;
+            if (!usuarioDest) continue;
+            try {
+              await Notificacion.create({
+                usuarioId: usuarioDest,
+                titulo: 'Pedido listo',
+                mensaje: shortMsg,
+                tipo: 'pedido_listo',
+                pedidoId: pedido.id,
+              });
+            } catch (e) {
+              // ignore DB error for notif
+            }
+
+            try {
+              req.io.to(`user:${usuarioDest}`).emit('notificacion', {
+                title: 'Pedido listo',
+                message: shortMsg,
+                tipo: 'pedido_listo',
+                pedidoId: pedido.id,
+                vendedorId: pedido.vendedorId,
+                ts: Date.now(),
+              });
+            } catch (_) {}
+          }
+        }
+      } catch (err) {
+        if (process.env.NODE_ENV === 'development') console.error('Error notificando repartidores:', err);
+      }
 
       res.json(pedido);
     } catch (error) {

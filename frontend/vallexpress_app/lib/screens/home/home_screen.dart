@@ -15,7 +15,6 @@ import '../profile/settings_screen.dart';
 import 'package:vallexpress_app/screens/cliente/cliente_productos_screen.dart';
 import 'package:vallexpress_app/screens/repartidor/repartidor_pedidos_screen.dart';
 import '../../providers/pedidos_provider.dart';
-import 'package:vallexpress_app/widgets/map_preview.dart';
 import 'package:vallexpress_app/widgets/mini_tracking_map.dart';
 import 'package:vallexpress_app/screens/cliente/rastrear_pedido_screen.dart';
 import 'dart:async';
@@ -110,10 +109,17 @@ class _HomeScreenState extends State<HomeScreen> {
               break;
             }
           }
+          if (!mounted) return;
           if (encontrado != null) {
-            if (!mounted) return;
             setState(() {
               _activePedidoCache = encontrado;
+            });
+          } else {
+            // Asegurarse de limpiar cualquier rastro de un pedido en_camino previo
+            setState(() {
+              _activePedidoCache = null;
+              _driverLatLngHome = null;
+              _joinedPedidoId = null;
             });
           }
         } catch (_) {
@@ -121,11 +127,44 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       });
     }
+    // Si el Provider no tiene activo pero nosotros sí tenemos cache,
+    // validar contra backend y limpiar si ya NO hay en_camino (p.ej. tras entregar)
+    else if (pedidosProvider.pedidoActivo == null &&
+        _activePedidoCache != null) {
+      final now = DateTime.now();
+      final shouldRefresh =
+          _lastPedidosFetch == null ||
+          now.difference(_lastPedidosFetch!).inSeconds >= 5;
+      if (shouldRefresh) {
+        _lastPedidosFetch = now;
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          try {
+            final lista = await PedidoService.misPedidos();
+            final existeEnCamino = lista.any(
+              (p) => (p['estado'] ?? '').toString() == 'en_camino',
+            );
+            if (!mounted) return;
+            if (!existeEnCamino) {
+              setState(() {
+                _activePedidoCache = null;
+                _driverLatLngHome = null;
+                _joinedPedidoId = null;
+              });
+            }
+          } catch (_) {
+            // ignorar
+          }
+        });
+      }
+    }
 
     // Iniciar tracking live en Home si hay pedido activo
     final token = context.read<AuthProvider>().token;
     final ap = (pedidosProvider.pedidoActivo ?? _activePedidoCache);
     final String? apId = ap != null ? (ap['id'] as String?) : null;
+    final String? apNumero = ap != null
+        ? (ap['numeroPedido'] as String?)
+        : null;
     if (apId != null && token != null && _joinedPedidoId != apId) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         if (!_homeSocket.isConnected) {
@@ -150,7 +189,7 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     }
 
-    Future<void> _abrirRastreo() async {
+    Future<void> abrirRastreo() async {
       // 1) Usar el activo del Provider si existe
       var activo = pedidosProvider.pedidoActivo;
 
@@ -187,7 +226,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       if (!mounted) return;
-      final ap2 = activo as Map<String, dynamic>;
+      final ap2 = activo;
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -216,10 +255,20 @@ class _HomeScreenState extends State<HomeScreen> {
                   fontWeight: FontWeight.bold,
                 ),
               ),
+              if (apNumero != null && apNumero.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  '#$apNumero',
+                  style: const TextStyle(
+                    color: AppTheme.textSecondaryColor,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               // Mini mapa de seguimiento en tiempo real
               GestureDetector(
-                onTap: _abrirRastreo,
+                onTap: abrirRastreo,
                 child: Container(
                   height: 200,
                   decoration: BoxDecoration(
@@ -250,8 +299,27 @@ class _HomeScreenState extends State<HomeScreen> {
                         AppConstants.clientLng,
                       ),
                       animateMock: false,
+                      onRefresh: () async {
+                        if (_joinedPedidoId != null) {
+                          await _homeSocket.ensureConnected();
+                          await _homeSocket.joinPedido(_joinedPedidoId!);
+                        }
+                      },
                     ),
                   ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _homeSocket.isConnected
+                    ? (_driverLatLngHome != null
+                          ? '🟢 Conectado. Recibiendo ubicación del repartidor.'
+                          : '🟢 Conectado. Esperando la primera ubicación…')
+                    : '🔴 Desconectado. Toca recargar o verifica tu conexión.',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.75),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
               const SizedBox(height: 24),
@@ -305,7 +373,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   context,
                   icon: Icons.location_on,
                   title: 'Rastrear',
-                  onTap: _abrirRastreo, // ✅ ahora sí abre la pantalla
+                  onTap: abrirRastreo, // ✅ ahora sí abre la pantalla
                 ),
                 _buildActionCard(
                   context,

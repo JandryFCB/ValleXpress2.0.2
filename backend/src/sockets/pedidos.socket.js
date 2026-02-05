@@ -95,7 +95,11 @@ module.exports = function registerPedidosSocket(io, socket) {
         });
       }
 
-      // opcional: notificar que alguien se unió
+      // opcional: notificar que alguien se unió (registro más seguro)
+      if (process.env.NODE_ENV === 'development') {
+        console.log('📡 pedido joined =>', roomPedido(pedidoId), { pedidoId, usuarioId, tipoUsuario });
+      }
+
       io.to(roomPedido(pedidoId)).emit('pedido:joined', {
         pedidoId,
         usuarioId,
@@ -125,13 +129,23 @@ module.exports = function registerPedidosSocket(io, socket) {
   // repartidor:ubicacion
   // (emitido por app repartidor)
   // =========================
-  socket.on('repartidor:ubicacion', async (payload, ack) => {
+    socket.on('repartidor:ubicacion', async (payload, ack) => {
     try {
+        // Debug: mostrar info del socket para verificar rol del remitente (solo en dev)
+        try {
+          if (process.env.NODE_ENV === 'development') {
+            console.log('📡 repartidor:ubicacion recibido desde socket.usuario =>', {
+              id: socket.usuario?.id,
+              tipoUsuario: socket.usuario?.tipoUsuario,
+            });
+          }
+        } catch (_) {}
       const usuarioId = socket.usuario?.id;
       const tipoUsuario = socket.usuario?.tipoUsuario;
 
       if (tipoUsuario !== 'repartidor') {
-        return ack?.({ ok: false, error: 'SOLO_REPARTIDOR' });
+          console.warn('⚠️ repartidor:ubicacion rechazado - tipoUsuario no es repartidor', { tipoUsuario, usuarioId });
+          return ack?.({ ok: false, error: 'SOLO_REPARTIDOR' });
       }
 
       // anti-spam: 1 update cada 2s
@@ -183,6 +197,14 @@ module.exports = function registerPedidosSocket(io, socket) {
       ultimaUbicacionPorPedido.set(String(pedidoId), data);
 
       // broadcast a los que ven el pedido
+      try {
+        if (process.env.NODE_ENV === 'development') {
+          console.log('📣 Emitting pedido:ubicacion =>', {
+            room: roomPedido(pedidoId),
+            payload: { pedidoId, ...data, source: 'live' },
+          });
+        }
+      } catch (_) {}
       io.to(roomPedido(pedidoId)).emit('pedido:ubicacion', {
         pedidoId,
         ...data,

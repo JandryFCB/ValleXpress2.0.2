@@ -6,6 +6,7 @@ import '../../config/constants.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../../services/profile_service.dart';
+import './addresses_screen.dart';
 
 class ClienteProfileScreen extends StatefulWidget {
   const ClienteProfileScreen({super.key});
@@ -274,6 +275,27 @@ class _ClienteProfileScreenState extends State<ClienteProfileScreen> {
                 child: Text(
                   _isEditing ? 'Guardar cambios' : 'Editar perfil',
                   style: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AddressesScreen()),
+                  );
+                },
+                icon: const Icon(Icons.location_on_outlined),
+                label: const Text('Gestionar direcciones'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.primaryColor,
+                  side: const BorderSide(
+                    color: AppTheme.primaryColor,
+                    width: 1.5,
+                  ),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
               ),
             ),

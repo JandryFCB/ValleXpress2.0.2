@@ -3,8 +3,8 @@ class AppConstants {
   // static const String baseUrl =
   //   'http://172.17.240.1:3000/api'; // Para emulador Android
   static const String baseUrl =
-      'http://192.168.0.103:3000/api'; // Para web/desktop
-  static const String socketUrl = 'http://192.168.0.103:3000';
+      'http://192.168.0.100:3000/api'; // Para web/desktop
+  static const String socketUrl = 'http://192.168.0.100:3000';
 
   // static const String baseUrl = 'http://172.17.240.1:3000/api'; // Para dispositivo físico
 

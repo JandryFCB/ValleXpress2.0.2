@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:latlong2/latlong.dart';
@@ -11,7 +12,7 @@ import '../../services/socket_tracking_service.dart';
 import '../../widgets/mini_tracking_map.dart';
 
 class RastrearPedidoScreen extends StatefulWidget {
-  final String pedidoId; // ⚠️ debe ser el UUID real del pedido (PK)
+  final String pedidoId;
 
   const RastrearPedidoScreen({super.key, required this.pedidoId});
 
@@ -25,51 +26,168 @@ class _RastrearPedidoScreenState extends State<RastrearPedidoScreen> {
   final TrackingSocketService _socketService = TrackingSocketService();
   StreamSubscription<Map<String, dynamic>>? _sub;
 
-  // Para mover el marcador del repartidor
   LatLng? _driverLatLng;
+
+  List<dynamic> _enCamino = [];
+  String? _selectedId;
+  bool _loadingLista = false;
+  bool _isConnected = false;
 
   @override
   void initState() {
     super.initState();
     _pedidoFuture = PedidoService.obtenerPorId(widget.pedidoId);
+    _selectedId = widget.pedidoId;
+    _cargarPedidosEnCamino();
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
 
-    // Aquí SÍ ya puedes leer Provider seguro
     final authProvider = context.read<AuthProvider>();
     final token = authProvider.token;
     if (token == null) return;
 
-    // Conectar socket (una sola vez)
-    if (!_socketService.isConnected) {
-      _socketService.connect(baseUrl: AppConstants.socketUrl, token: token);
+    _connectAndJoin();
+  }
 
-      // unirse al room del pedido
-      Future.delayed(const Duration(milliseconds: 700), () async {
-        final ack = await _socketService.joinPedido(widget.pedidoId);
-        print('ACK pedido:join => $ack');
-      });
+  Future<void> _connectAndJoin() async {
+    final authProvider = context.read<AuthProvider>();
+    final token = authProvider.token;
+    if (token == null) return;
 
-      // escuchar ubicaciones
-      _sub = _socketService.locationStream.listen((data) {
-        final lat = (data['lat'] as num?)?.toDouble();
-        final lng = (data['lng'] as num?)?.toDouble();
-        if (lat == null || lng == null) return;
+    _socketService.connect(baseUrl: AppConstants.socketUrl, token: token);
+    if (kDebugMode) print('🌐 Cliente conectando socket...');
 
+    await _socketService.ensureConnected();
+    final ack = await _socketService.joinPedido(widget.pedidoId);
+    if (kDebugMode) print('ACK pedido:join => $ack');
+    if (kDebugMode) print('✅ Cliente join => $ack');
+
+    _sub ??= _socketService.locationStream.listen((data) {
+      if (kDebugMode) print('📥 Cliente recibe ubicacion => $data');
+      final lat = (data['lat'] as num?)?.toDouble();
+      final lng = (data['lng'] as num?)?.toDouble();
+      if (lat == null || lng == null || lat.isNaN || lng.isNaN) return;
+
+      if (mounted) {
         setState(() {
           _driverLatLng = LatLng(lat, lng);
+          _isConnected = true;
         });
+      }
+    });
+
+    if (mounted) {
+      setState(() {
+        _isConnected = _socketService.isConnected;
       });
     }
+  }
+
+  Future<void> _cargarPedidosEnCamino() async {
+    if (!mounted) return;
+    setState(() => _loadingLista = true);
+    try {
+      final lista = await PedidoService.misPedidos();
+      final en = lista
+          .where((p) => (p['estado'] ?? '').toString() == 'en_camino')
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _enCamino = en;
+        _loadingLista = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingLista = false);
+    }
+  }
+
+  Widget _buildSelectorPedidos() {
+    if (_enCamino.length <= 1) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: AppTheme.cardColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: AppTheme.borderColor.withOpacity(0.25),
+          width: 1.3,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: const Color(0xFFFDB827).withOpacity(0.15),
+              shape: BoxShape.circle,
+              border: Border.all(color: const Color(0xFFFDB827), width: 1),
+            ),
+            child: const Icon(
+              Icons.local_shipping,
+              color: Color(0xFFFDB827),
+              size: 18,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _selectedId,
+                isExpanded: true,
+                dropdownColor: AppTheme.cardColor,
+                iconEnabledColor: const Color(0xFFFDB827),
+                style: const TextStyle(
+                  color: AppTheme.textPrimaryColor,
+                  fontWeight: FontWeight.w700,
+                ),
+                items: _enCamino.map<DropdownMenuItem<String>>((p) {
+                  final id = (p['id'] as String?) ?? '';
+                  final numPed = (p['numeroPedido'] ?? '').toString();
+                  final label = numPed.isNotEmpty ? '#$numPed' : id;
+                  return DropdownMenuItem<String>(
+                    value: id,
+                    child: Text(label, overflow: TextOverflow.ellipsis),
+                  );
+                }).toList(),
+                onChanged: (id) {
+                  if (id != null && id != widget.pedidoId) {
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => RastrearPedidoScreen(pedidoId: id),
+                      ),
+                    );
+                  }
+                },
+              ),
+            ),
+          ),
+          if (_loadingLista) ...[
+            const SizedBox(width: 8),
+            const SizedBox(
+              height: 18,
+              width: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Color(0xFFFDB827),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 
   @override
   void dispose() {
     _sub?.cancel();
-    _socketService.dispose();
+    _socketService.disconnect();
     super.dispose();
   }
 
@@ -127,10 +245,12 @@ class _RastrearPedidoScreenState extends State<RastrearPedidoScreen> {
           IconButton(
             tooltip: 'Actualizar',
             icon: const Icon(Icons.refresh, color: Color(0xFFFDB827)),
-            onPressed: () {
+            onPressed: () async {
               setState(() {
                 _pedidoFuture = PedidoService.obtenerPorId(widget.pedidoId);
               });
+              await _connectAndJoin();
+              await _cargarPedidosEnCamino();
             },
           ),
         ],
@@ -150,7 +270,6 @@ class _RastrearPedidoScreenState extends State<RastrearPedidoScreen> {
                 final vendedor = pedido?['vendedor'];
                 final tienda = (vendedor?['nombreNegocio'] ?? '').toString();
 
-                // Si todavía no hay ubicación real, usamos un fallback
                 final driver =
                     _driverLatLng ??
                     LatLng(AppConstants.vendorLat, AppConstants.vendorLng);
@@ -161,7 +280,7 @@ class _RastrearPedidoScreenState extends State<RastrearPedidoScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Card info
+                        _buildSelectorPedidos(),
                         Container(
                           width: double.infinity,
                           padding: const EdgeInsets.all(16),
@@ -233,49 +352,82 @@ class _RastrearPedidoScreenState extends State<RastrearPedidoScreen> {
 
                         const SizedBox(height: 16),
 
-                        Text(
-                          'Ubicación del repartidor',
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(
-                                color: AppTheme.textPrimaryColor,
-                                fontWeight: FontWeight.bold,
+                        if (estado == 'en_camino') ...[
+                          Text(
+                            'Ubicación del repartidor',
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(
+                                  color: AppTheme.textPrimaryColor,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                          ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            height: 320,
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(16),
+                              child: MiniTrackingMap(
+                                initialCenter: driver,
+                                clientLocation: LatLng(
+                                  AppConstants.clientLat,
+                                  AppConstants.clientLng,
+                                ),
+                                vendorLocation: LatLng(
+                                  AppConstants.vendorLat,
+                                  AppConstants.vendorLng,
+                                ),
+                                driverLocation: driver,
+                                onRefresh: () async {
+                                  await _connectAndJoin();
+                                },
                               ),
-                        ),
-
-                        const SizedBox(height: 12),
-
-                        // FlutterMap requiere constraints finitos en Web; envolver con SizedBox.
-                        SizedBox(
-                          height: 320,
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(16),
-                            child: MiniTrackingMap(
-                              initialCenter: driver,
-                              // luego conectamos cliente/vendedor reales, por ahora placeholders
-                              clientLocation: LatLng(
-                                AppConstants.clientLat,
-                                AppConstants.clientLng,
-                              ),
-                              vendorLocation: LatLng(
-                                AppConstants.vendorLat,
-                                AppConstants.vendorLng,
-                              ),
-                              driverLocation:
-                                  driver, // 👈 ESTE se mueve en vivo
                             ),
                           ),
-                        ),
-
-                        const SizedBox(height: 14),
+                          const SizedBox(height: 14),
+                        ] else ...[
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: AppTheme.cardColor,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: AppTheme.borderColor.withOpacity(0.25),
+                                width: 1.3,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.info_outline,
+                                  color: Color(0xFFFDB827),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    'No tienes un pedido en camino para rastrear.',
+                                    style: TextStyle(
+                                      color: Colors.white.withOpacity(0.85),
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                        ],
 
                         Text(
-                          _socketService.isConnected
-                              ? '🟢 Conectado. Esperando ubicación del repartidor...'
-                              : '🔴 Socket no conectado (revisa IP/token).',
+                          _isConnected
+                              ? (_driverLatLng != null
+                                    ? '🟢 Conectado. Recibiendo ubicación del repartidor.'
+                                    : '🟢 Conectado. Esperando la primera ubicación…')
+                              : '🔴 Desconectado. Toca recargar o verifica tu conexión.',
                           style: TextStyle(
-                            color: Colors.white.withOpacity(0.7),
+                            color: Colors.white.withOpacity(0.75),
                             fontSize: 12,
-                            fontWeight: FontWeight.w600,
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
                       ],

@@ -43,6 +43,14 @@ const Pedido = sequelize.define('Pedido', {
     },
     field: 'repartidor_id'
   },
+  direccionEntregaId: {
+    type: DataTypes.UUID,
+    references: {
+      model: 'direcciones',
+      key: 'id'
+    },
+    field: 'direccion_entrega_id'
+  },
   estado: {
     type: DataTypes.STRING(50),
     allowNull: false,
@@ -130,6 +138,7 @@ const Usuario = require('./Usuario');
 const Vendedor = require('./Vendedor');
 const Repartidor = require('./Repartidor');
 const DetallePedido = require('./DetallePedido');
+const Direccion = require('./Direccion');
 
 // Asociaciones
 Pedido.belongsTo(Usuario, {
@@ -145,6 +154,11 @@ Pedido.belongsTo(Vendedor, {
 Pedido.belongsTo(Repartidor, {
   foreignKey: 'repartidorId',
   as: 'repartidor'
+});
+
+Pedido.belongsTo(Direccion, {
+  foreignKey: 'direccionEntregaId',
+  as: 'direccionEntrega'
 });
 
 Pedido.hasMany(DetallePedido, {

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -14,6 +15,9 @@ class MiniTrackingMap extends StatefulWidget {
   // Si true, mueve el marcador del repartidor con animación mock (para demos)
   final bool animateMock;
 
+  // Callback opcional para refrescar (por ejemplo, re-join del socket)
+  final VoidCallback? onRefresh;
+
   const MiniTrackingMap({
     super.key,
     required this.initialCenter,
@@ -21,6 +25,7 @@ class MiniTrackingMap extends StatefulWidget {
     required this.vendorLocation,
     required this.clientLocation,
     this.animateMock = false,
+    this.onRefresh,
   });
 
   @override
@@ -31,6 +36,7 @@ class _MiniTrackingMapState extends State<MiniTrackingMap> {
   late final MapController _mapController;
   Timer? _smoothTimer;
   LatLng? _animatedDriver;
+  bool _cameraCentered = false;
 
   @override
   void initState() {
@@ -57,8 +63,15 @@ class _MiniTrackingMapState extends State<MiniTrackingMap> {
   @override
   void didUpdateWidget(covariant MiniTrackingMap oldWidget) {
     super.didUpdateWidget(oldWidget);
+    try {
+      if (kDebugMode) {
+        print(
+          '🗺️ MiniTrackingMap.didUpdateWidget => driver=${widget.driverLocation.latitude},${widget.driverLocation.longitude}',
+        );
+      }
+    } catch (_) {}
     // Si recibimos una nueva ubicación del repartidor desde el padre (socket),
-    // actualizamos el marcador inmediatamente cuando no hay animación mock.
+    // actualizamos el marcador y movemos la cámara si es la primera vez o si cambió significativamente.
     if (!widget.animateMock &&
         (oldWidget.driverLocation.latitude != widget.driverLocation.latitude ||
             oldWidget.driverLocation.longitude !=
@@ -66,12 +79,22 @@ class _MiniTrackingMapState extends State<MiniTrackingMap> {
       setState(() {
         _animatedDriver = widget.driverLocation;
       });
+      // Mover la cámara al repartidor cuando se actualiza su ubicación
+      _mapController.move(widget.driverLocation, _mapController.camera.zoom);
+      _cameraCentered = true;
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final driver = _animatedDriver ?? widget.driverLocation;
+    try {
+      if (kDebugMode) {
+        print(
+          '🗺️ MiniTrackingMap.build => animatedDriver=${driver.latitude},${driver.longitude} cameraCenter=${_mapController.camera.center} zoom=${_mapController.camera.zoom}',
+        );
+      }
+    } catch (_) {}
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
@@ -88,9 +111,6 @@ class _MiniTrackingMapState extends State<MiniTrackingMap> {
                     InteractiveFlag.pinchZoom |
                     InteractiveFlag.doubleTapZoom,
               ),
-              onMapEvent: (event) {
-                // Mantener cámara actualizada (v7 lo hace internamente)
-              },
             ),
             children: [
               TileLayer(
@@ -108,6 +128,7 @@ class _MiniTrackingMapState extends State<MiniTrackingMap> {
                       widget.clientLocation,
                     ],
                     strokeWidth: 4,
+                    color: Colors.blue,
                   ),
                 ],
               ),
@@ -118,16 +139,19 @@ class _MiniTrackingMapState extends State<MiniTrackingMap> {
                     point: widget.clientLocation,
                     label: "C",
                     icon: Icons.home_rounded,
+                    color: Colors.green,
                   ),
                   _pin(
                     point: widget.vendorLocation,
                     label: "V",
                     icon: Icons.storefront_rounded,
+                    color: Colors.red,
                   ),
                   _pin(
                     point: driver,
                     label: "R",
                     icon: Icons.delivery_dining_rounded,
+                    color: Colors.orange,
                     isPrimary: true,
                   ),
                 ],
@@ -139,16 +163,18 @@ class _MiniTrackingMapState extends State<MiniTrackingMap> {
             bottom: 8,
             child: Column(
               children: [
-                _zoomButton(Icons.add, () {
-                  final c = _mapController.camera.center;
+                if (widget.onRefresh != null) ...[
+                  _iconButton(Icons.refresh, widget.onRefresh!),
+                  const SizedBox(height: 8),
+                ],
+                _iconButton(Icons.add, () {
                   final z = _mapController.camera.zoom;
-                  _mapController.move(c, z + 1);
+                  _mapController.move(_mapController.camera.center, z + 1);
                 }),
                 const SizedBox(height: 8),
-                _zoomButton(Icons.remove, () {
-                  final c = _mapController.camera.center;
+                _iconButton(Icons.remove, () {
                   final z = _mapController.camera.zoom;
-                  _mapController.move(c, z - 1);
+                  _mapController.move(_mapController.camera.center, z - 1);
                 }),
               ],
             ),
@@ -158,7 +184,7 @@ class _MiniTrackingMapState extends State<MiniTrackingMap> {
     );
   }
 
-  Widget _zoomButton(IconData icon, VoidCallback onPressed) {
+  Widget _iconButton(IconData icon, VoidCallback onPressed) {
     return Material(
       color: Colors.white,
       shape: const CircleBorder(),
@@ -179,6 +205,7 @@ class _MiniTrackingMapState extends State<MiniTrackingMap> {
     required LatLng point,
     required String label,
     required IconData icon,
+    required Color color,
     bool isPrimary = false,
   }) {
     return Marker(
@@ -187,9 +214,7 @@ class _MiniTrackingMapState extends State<MiniTrackingMap> {
       height: 54,
       child: Container(
         decoration: BoxDecoration(
-          color: isPrimary
-              ? const Color(0xFFFFC107)
-              : Colors.black.withOpacity(0.85),
+          color: isPrimary ? color : color.withOpacity(0.85),
           shape: BoxShape.circle,
           boxShadow: [
             BoxShadow(

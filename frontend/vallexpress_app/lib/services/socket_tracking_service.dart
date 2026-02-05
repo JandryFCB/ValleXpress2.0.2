@@ -1,8 +1,19 @@
 import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 
+String? _currentToken;
+String? _currentBaseUrl;
+
 class TrackingSocketService {
+  static final TrackingSocketService _instance =
+      TrackingSocketService._internal();
+  factory TrackingSocketService() => _instance;
+  TrackingSocketService._internal();
+
   IO.Socket? _socket;
+  String? _lastJoinedPedidoId;
 
   final _locationController =
       StreamController<Map<String, dynamic>>.broadcast();
@@ -10,54 +21,160 @@ class TrackingSocketService {
 
   bool get isConnected => _socket?.connected ?? false;
 
-  void connect({
-    required String baseUrl, // ej: http://192.168.0.103:3000  (SIN /api)
-    required String token,
-  }) {
-    // si ya existe y está conectando/conectado, no recrear
-    if (_socket != null && (_socket!.connected || _socket!.active)) return;
+  void connect({required String baseUrl, required String token}) {
+    // Si el token o baseUrl cambió, hay que recrear el socket (handshake nuevo)
+    if (_socket != null &&
+        (_currentToken != token || _currentBaseUrl != baseUrl)) {
+      try {
+        _socket!.disconnect();
+      } catch (_) {}
+      _socket = null;
+      _lastJoinedPedidoId = null;
+    }
+    _currentToken = token;
+    _currentBaseUrl = baseUrl;
+
+    if (_socket != null) {
+      try {
+        _socket!.auth = {'token': token};
+      } catch (_) {}
+      if (!(_socket!.connected) && !(_socket!.active)) {
+        _socket!.connect();
+      }
+      return;
+    }
 
     _socket = IO.io(
       baseUrl,
       IO.OptionBuilder()
           .setTransports(['websocket'])
           .enableAutoConnect()
-          .enableReconnection() // auto-reintentos
+          .enableReconnection()
+          .setReconnectionAttempts(999999)
           .setReconnectionDelay(1000)
-          .setReconnectionAttempts(20)
-          .setAuth({'token': token}) // 👈 backend lee handshake.auth.token
+          .setReconnectionDelayMax(5000)
+          .setRandomizationFactor(0.5)
+          .setAuth({'token': token})
           .build(),
     );
 
-    _socket!.onConnect((_) => print('🟢 Socket conectado'));
-    _socket!.onDisconnect((_) => print('🔴 Socket desconectado'));
-    _socket!.on(
-      'reconnect_attempt',
-      (a) => print('… Reintentando socket ($a)'),
-    );
-    _socket!.on('reconnect', (_) => print('🟢 Socket reconectado'));
-    _socket!.on('reconnect_error', (e) => print('❌ reconnect_error: $e'));
-    _socket!.on('reconnect_failed', (_) => print('❌ reconnect_failed'));
-
-    _socket!.on('pedido:ubicacion', (data) {
-      if (data is Map) {
-        _locationController.add(Map<String, dynamic>.from(data));
+    _socket!.onConnect((_) {
+      if (kDebugMode) print('🟢 Socket conectado');
+      if (_lastJoinedPedidoId != null) {
+        try {
+          _socket!.emit('pedido:join', {'pedidoId': _lastJoinedPedidoId});
+        } catch (_) {}
       }
     });
 
-    _socket!.onConnectError((e) => print('❌ connect_error: $e'));
-    _socket!.onError((e) => print('❌ error: $e'));
+    _socket!.onDisconnect((reason) {
+      if (kDebugMode) print('🔴 Socket desconectado: $reason');
+    });
+
+    _socket!.on('reconnect_attempt', (n) {
+      if (kDebugMode) print('… Reintentando socket ($n)');
+    });
+    _socket!.on('reconnect', (_) {
+      if (kDebugMode) print('🟢 Socket reconectado');
+      if (_lastJoinedPedidoId != null) {
+        try {
+          _socket!.emit('pedido:join', {'pedidoId': _lastJoinedPedidoId});
+        } catch (_) {}
+      }
+    });
+
+    _socket!.on('reconnect_error', (e) {
+      if (kDebugMode) print('❌ reconnect_error: $e');
+    });
+    _socket!.on('reconnect_failed', (_) {
+      if (kDebugMode) print('❌ reconnect_failed');
+    });
+    _socket!.onConnectError((e) {
+      if (kDebugMode) print('❌ connect_error: $e');
+    });
+    _socket!.onError((e) {
+      if (kDebugMode) print('❌ error: $e');
+    });
+
+    _socket!.on('pedido:ubicacion', (data) {
+      // Debug: mostrar raw data y tipo para diagnosticar problemas de parsing
+      try {
+        if (kDebugMode) {
+          print(
+            '🔔 RAW pedido:ubicacion recibido => type=${data.runtimeType} value=$data',
+          );
+        }
+      } catch (_) {}
+
+      try {
+        if (data is Map) {
+          _locationController.add(Map<String, dynamic>.from(data));
+          return;
+        }
+        // En Flutter web, el payload puede venir como un objeto JS (_JsObject).
+        // Intentar convertir por jsonEncode/jsonDecode como fallback.
+        try {
+          final encoded = jsonEncode(data);
+          final decoded = jsonDecode(encoded);
+          if (decoded is Map) {
+            _locationController.add(Map<String, dynamic>.from(decoded));
+            return;
+          }
+        } catch (_) {}
+
+        if (data is String) {
+          final parsed = jsonDecode(data);
+          if (parsed is Map) {
+            _locationController.add(Map<String, dynamic>.from(parsed));
+            return;
+          }
+        }
+
+        if (data is List) {
+          // Socket.IO web frecuentemente entrega [payload, socketId]
+          // -> preferimos usar el primer elemento si existe.
+          if (data.isNotEmpty) {
+            final first = data[0];
+            try {
+              if (first is Map) {
+                _locationController.add(Map<String, dynamic>.from(first));
+                return;
+              }
+              // Intentar convertir objetos JS a JSON
+              final encodedFirst = jsonEncode(first);
+              final decodedFirst = jsonDecode(encodedFirst);
+              if (decodedFirst is Map) {
+                _locationController.add(
+                  Map<String, dynamic>.from(decodedFirst),
+                );
+                return;
+              }
+            } catch (_) {}
+          }
+
+          // Fallback antiguo: intentar convertir pares [k,v,k,v,...]
+          final m = <String, dynamic>{};
+          for (var i = 0; i + 1 < data.length; i += 2) {
+            final k = data[i]?.toString() ?? i.toString();
+            m[k] = data[i + 1];
+          }
+          if (m.isNotEmpty) {
+            _locationController.add(m);
+            return;
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) print('❌ Error parseando pedido:ubicacion => $e');
+      }
+    });
   }
 
-  /// Forzar reconexión si el socket quedó desconectado
   Future<void> ensureConnected() async {
     if (_socket == null) return;
     if (!(_socket!.connected)) {
       try {
         _socket!.connect();
-      } catch (_) {
-        // no-op
-      }
+      } catch (_) {}
     }
   }
 
@@ -65,6 +182,8 @@ class TrackingSocketService {
     if (_socket == null) return {'ok': false, 'error': 'SOCKET_NULL'};
 
     final completer = Completer<Map<String, dynamic>>();
+    await ensureConnected();
+    _lastJoinedPedidoId = pedidoId;
 
     _socket!.emitWithAck(
       'pedido:join',
@@ -125,12 +244,6 @@ class TrackingSocketService {
     );
   }
 
-  void disconnect() {
-    _socket?.disconnect();
-  }
-
-  void dispose() {
-    _socket?.dispose();
-    _locationController.close();
-  }
+  void disconnect() => _socket?.disconnect();
+  void dispose() {}
 }

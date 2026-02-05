@@ -41,6 +41,9 @@ const PasswordResetCode = sequelize.define('PasswordResetCode', {
 }, {
   tableName: 'password_reset_codes',
   timestamps: true, // createdAt / updatedAt
+  // El esquema usa snake_case (created_at, updated_at, used_at, etc.)
+  // `underscored: true` hace que Sequelize mapee `usedAt` -> `used_at` automáticamente.
+  underscored: true,
 });
 
 module.exports = PasswordResetCode;

@@ -111,6 +111,7 @@ class PedidoService {
     required List<Map<String, dynamic>> productos,
     required String metodoPago,
     String? notasCliente,
+    String? direccionEntregaId, // 👈 opcional: usar tabla direcciones
   }) async {
     final token = await _getToken();
 
@@ -125,6 +126,8 @@ class PedidoService {
         'productos': productos,
         'metodoPago': metodoPago,
         'notasCliente': notasCliente,
+        if (direccionEntregaId != null)
+          'direccionEntregaId': direccionEntregaId,
       }),
     );
 

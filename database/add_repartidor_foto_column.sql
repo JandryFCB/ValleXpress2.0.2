@@ -1,1 +1,0 @@
-ALTER TABLE repartidores ADD COLUMN foto VARCHAR(255);

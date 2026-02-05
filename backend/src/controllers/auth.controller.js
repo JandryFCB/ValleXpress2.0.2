@@ -300,7 +300,15 @@ async function forgotPassword(req, res) {
       usedAt: null,
     });
 
-    console.log(`[RESET] Código para ${email}: ${code}`);
+    // Enviar correo real si está configurado, si falla no interrumpe respuesta al cliente
+    try {
+      const mailer = require('../services/mailer.service');
+      await mailer.sendPasswordResetCode(email, code);
+    } catch (mailErr) {
+      console.error('Error enviando email reset:', mailErr);
+      // Fallback: log el código en consola para entornos de desarrollo
+      console.log(`[RESET] Código para ${email}: ${code}`);
+    }
 
     return res.json({ message: 'Si el correo existe, te enviamos un código de verificación.' });
   } catch (e) {
